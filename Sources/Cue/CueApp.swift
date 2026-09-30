@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import Combine
 
 @main
 struct CueApp: App {
@@ -39,13 +40,52 @@ final class Session: ObservableObject {
     let audio = AudioCapture()
     private var panel: NSPanel?
     private var pending: Task<Void, Never>?
+    private var pauses: AnyCancellable?
+    private var assessing = false
+    private var checkedLength = 0 // transcript length at the last automatic check
+    private var answeredThrough = 0 // transcript length when the last automatic suggestion fired
+
+    init() {
+        // A pause in recognized speech is the cue to ask whether the interviewer just asked something.
+        pauses = audio.$partial.debounce(for: .seconds(1.5), scheduler: RunLoop.main).sink { [weak self] _ in self?.listen() }
+    }
+
     func suggest() {
         guard !busy else { return }
         guard !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !audio.transcript.isEmpty else {
             error = "Start listening or type a question first."; return
         }
+        run(question: question.isEmpty ? nil : question, assessment: nil)
+    }
+
+    private func listen() {
+        let transcript = audio.transcript
+        guard UserDefaults.standard.bool(forKey: "typesafe.auto"), !busy, !assessing, transcript.count > checkedLength else { return }
+        let key: String
+        do { key = try Credentials.read(account: TypeSafeAPI.account, label: "TypeSafe") } catch { self.error = error.localizedDescription; return }
+        guard !key.isEmpty else { return }
+        checkedLength = transcript.count
+        let latest = String(transcript.dropFirst(min(answeredThrough, transcript.count)).suffix(800))
+        guard latest.split(separator: " ").count >= 3 else { return }
+        let earlier = String(transcript.dropLast(latest.count).suffix(1500))
+        let defaults = UserDefaults.standard
+        let lines = TypeSafeAPI.resumeLines(defaults.string(forKey: "resume") ?? "")
+        assessing = true
+        Task {
+            defer { assessing = false }
+            do {
+                let assessment = try await TypeSafeAPI.assess(key: key, role: defaults.string(forKey: "role") ?? "", earlier: earlier, latest: latest, lines: lines, detectQuestion: true)
+                guard assessment.asksQuestion >= TypeSafeAPI.questionThreshold, assessment.kind != .smallTalk, !busy else { return }
+                answeredThrough = transcript.count
+                run(question: latest, assessment: assessment)
+            } catch is CancellationError {
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
+    private func run(question typed: String?, assessment: Assessment?) {
         busy = true; error = ""
-        let q = question.isEmpty ? "Help me respond to the latest interview question." : question
+        let q = typed ?? "Help me respond to the latest interview question."
         let transcript = audio.transcript
         let defaults = UserDefaults.standard
         let configuration = LLMConfiguration.load(from: defaults)
@@ -54,9 +94,21 @@ final class Session: ObservableObject {
         pending = Task {
             defer { busy = false }
             do {
-                let result = try await AssistantAPI.suggest(configuration: configuration, key: Credentials.read(for: configuration.provider), resume: resume, role: role, transcript: transcript, question: q)
+                var assessment = assessment
+                var note = ""
+                let typeSafeKey = try Credentials.read(account: TypeSafeAPI.account, label: "TypeSafe")
+                if assessment == nil, !typeSafeKey.isEmpty {
+                    do {
+                        assessment = try await TypeSafeAPI.assess(key: typeSafeKey, role: role, earlier: String(transcript.suffix(1500)), latest: typed ?? String(transcript.suffix(800)),
+                                                                  lines: TypeSafeAPI.resumeLines(resume), detectQuestion: false)
+                    } catch is CancellationError { return } catch { note = "\(error.localizedDescription) Used your full résumé instead." }
+                }
+                // Fall back to the full résumé when no line clears the relevance bar.
+                let experience = assessment.map(\.evidence).flatMap { $0.isEmpty ? nil : $0.joined(separator: "\n") } ?? resume
+                let result = try await AssistantAPI.suggest(configuration: configuration, key: Credentials.read(for: configuration.provider), resume: experience, role: role,
+                                                            transcript: transcript, question: q, guidance: assessment?.kind.guidance)
                 guard !Task.isCancelled else { return }
-                answer = result; history.append("## \(q)\n\n\(result)")
+                answer = result; history.append("## \(q)\n\n\(result)"); error = note
             } catch {
                 if !Task.isCancelled { self.error = error.localizedDescription }
             }
@@ -66,6 +118,7 @@ final class Session: ObservableObject {
     func clear() async {
         pending?.cancel(); await audio.stop()
         question = ""; notes = ""; answer = ""; history = []; audio.segments = []; audio.error = ""; error = ""
+        checkedLength = 0; answeredThrough = 0
     }
     func export() {
         let save = NSSavePanel(); save.allowedContentTypes = [.plainText]; save.nameFieldStringValue = "Cue session.md"
@@ -253,6 +306,8 @@ struct SetupView: View {
                 TextEditor(text: $role).font(.body).frame(height: 90).border(.white.opacity(0.1))
                 Divider()
                 ProviderSettingsView()
+                Divider()
+                TypeSafeSettingsView()
             }.padding(28)
         }.frame(width: 600, height: 700)
             .interactiveDismissDisabled(importingResume)
