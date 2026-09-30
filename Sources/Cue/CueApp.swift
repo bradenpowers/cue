@@ -41,6 +41,9 @@ final class Session: ObservableObject {
     private var panel: NSPanel?
     private var pending: Task<Void, Never>?
     private var pauses: AnyCancellable?
+    private var autosave: AnyCancellable?
+    private var interview = Interview()
+    private let store = InterviewStore()
     private var assessing = false
     private var checkedLength = 0 // transcript length at the last automatic check
     private var answeredThrough = 0 // transcript length when the last automatic suggestion fired
@@ -48,6 +51,17 @@ final class Session: ObservableObject {
     init() {
         // A pause in recognized speech is the cue to ask whether the interviewer just asked something.
         pauses = audio.$partial.debounce(for: .seconds(1.5), scheduler: RunLoop.main).sink { [weak self] _ in self?.listen() }
+        autosave = Publishers.CombineLatest4(audio.$segments, audio.$partial, $history, $notes).dropFirst()
+            .debounce(for: .seconds(2), scheduler: RunLoop.main).sink { [weak self] _ in self?.save() }
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.save() }
+        }
+    }
+
+    private func save() {
+        interview.role = UserDefaults.standard.string(forKey: "role") ?? ""
+        interview.transcript = audio.transcript; interview.talkingPoints = history; interview.notes = notes
+        do { try store.save(interview) } catch { self.error = "Could not save this interview: \(error.localizedDescription)" }
     }
 
     func suggest() {
@@ -117,14 +131,15 @@ final class Session: ObservableObject {
     func cancel() { pending?.cancel() }
     func clear() async {
         pending?.cancel(); await audio.stop()
+        save(); interview = Interview()
         question = ""; notes = ""; answer = ""; history = []; audio.segments = []; audio.error = ""; error = ""
         checkedLength = 0; answeredThrough = 0
     }
     func export() {
-        let save = NSSavePanel(); save.allowedContentTypes = [.plainText]; save.nameFieldStringValue = "Cue session.md"
-        guard save.runModal() == .OK, let url = save.url else { return }
-        let text = "# Cue session\n\n\(Date().formatted())\n\n## Transcript\n\n\(audio.transcript)\n\n## Talking points\n\n\(history.joined(separator: "\n\n"))\n\n## Notes\n\n\(notes)"
-        do { try text.write(to: url, atomically: true, encoding: .utf8) } catch { self.error = error.localizedDescription }
+        let panel = NSSavePanel(); panel.allowedContentTypes = [.plainText]; panel.nameFieldStringValue = "Cue session.md"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        save()
+        do { try interview.markdown.write(to: url, atomically: true, encoding: .utf8) } catch { self.error = error.localizedDescription }
     }
     func togglePanel() {
         if let panel { if panel.isVisible { panel.orderOut(nil) } else { panel.makeKeyAndOrderFront(nil) }; return }
@@ -142,6 +157,7 @@ let surface = Color(red: 0.105, green: 0.12, blue: 0.13)
 struct Workspace: View {
     @EnvironmentObject var session: Session
     @State private var clearConfirmation = false
+    @State private var reviewing = false
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 28) {
@@ -153,6 +169,7 @@ struct Workspace: View {
                     Text("YOUR WORKSPACE").font(.system(size: 10, weight: .bold)).tracking(2).foregroundStyle(.secondary)
                     Label("Live interview", systemImage: "waveform").font(.system(size: 13, weight: .semibold)).padding(12).frame(maxWidth: .infinity, alignment: .leading).background(mint.opacity(0.1), in: RoundedRectangle(cornerRadius: 10)).foregroundStyle(mint)
                     Button { session.setup = true } label: { Label("Context & setup", systemImage: "slider.horizontal.3").padding(12) }.buttonStyle(.plain)
+                    Button { reviewing = true } label: { Label("Past interviews", systemImage: "clock.arrow.circlepath").padding(12) }.buttonStyle(.plain)
                 }
                 Spacer()
                 VStack(alignment: .leading, spacing: 10) {
@@ -213,10 +230,11 @@ struct Workspace: View {
                         if session.notes.isEmpty { Text("Names, questions to ask, things to come back to…").font(.system(size: 13)).foregroundStyle(.tertiary).padding(.top, 1).padding(.leading, 5).allowsHitTesting(false) }
                     }
                 }.padding(16).background(surface, in: RoundedRectangle(cornerRadius: 12))
-                HStack { Circle().fill(mint).frame(width: 5, height: 5); Text("Session stays in memory until you export."); Spacer(); Text("macOS · Cue") }.font(.system(size: 10)).foregroundStyle(.secondary)
+                HStack { Circle().fill(mint).frame(width: 5, height: 5); Text("Interviews save automatically on this Mac."); Spacer(); Text("macOS · Cue") }.font(.system(size: 10)).foregroundStyle(.secondary)
             }.padding(28).background(Color(red: 0.075, green: 0.088, blue: 0.095))
         }.sheet(isPresented: $session.setup) { SetupView() }
-            .confirmationDialog("Start a new session? Unsaved transcript, talking points and notes will be cleared.", isPresented: $clearConfirmation) {
+            .sheet(isPresented: $reviewing) { InterviewsView() }
+            .confirmationDialog("Start a new session? The current interview is saved to Past interviews.", isPresented: $clearConfirmation) {
                 Button("Clear and start new", role: .destructive) { Task { await session.clear() } }
             }
     }
