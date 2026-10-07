@@ -170,6 +170,7 @@ struct Workspace: View {
     @EnvironmentObject var session: Session
     @State private var clearConfirmation = false
     @State private var reviewing = false
+    @AppStorage("welcomed") private var welcomed = false
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 28) {
@@ -182,6 +183,7 @@ struct Workspace: View {
                     Label("Live interview", systemImage: "waveform").font(.system(size: 13, weight: .semibold)).padding(12).frame(maxWidth: .infinity, alignment: .leading).background(mint.opacity(0.1), in: RoundedRectangle(cornerRadius: 10)).foregroundStyle(mint)
                     Button { session.setup = true } label: { Label("Context & setup", systemImage: "slider.horizontal.3").padding(12) }.buttonStyle(.plain)
                     Button { reviewing = true } label: { Label("Past interviews", systemImage: "clock.arrow.circlepath").padding(12) }.buttonStyle(.plain)
+                    Button { welcomed = false } label: { Label("Getting started", systemImage: "questionmark.circle").padding(12) }.buttonStyle(.plain)
                 }
                 Spacer()
                 VStack(alignment: .leading, spacing: 10) {
@@ -246,6 +248,7 @@ struct Workspace: View {
             }.padding(28).background(Color(red: 0.075, green: 0.088, blue: 0.095))
         }.sheet(isPresented: $session.setup) { SetupView() }
             .sheet(isPresented: $reviewing) { InterviewsView() }
+            .sheet(isPresented: Binding(get: { !welcomed }, set: { welcomed = !$0 })) { WelcomeView() }
             .confirmationDialog("Start a new session? The current interview is saved to Past interviews.", isPresented: $clearConfirmation) {
                 Button("Clear and start new", role: .destructive) { Task { await session.clear() } }
             }
@@ -324,28 +327,13 @@ struct FloatingView: View {
 
 struct SetupView: View {
     @Environment(\.dismiss) var dismiss
-    @AppStorage("resume") private var resume = ""
-    @AppStorage("role") private var role = ""
-    @State private var choosingResume = false
     @State private var importingResume = false
-    @State private var importedResume: ImportedResume?
-    @State private var importError = ""
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 HStack { Text("Make Cue yours.").font(.system(size: 25, weight: .medium)); Spacer(); Button("Done") { dismiss() }.disabled(importingResume) }
                 Text("Give your assistant the context behind your answers.").foregroundStyle(.secondary)
-                HStack {
-                    Text("YOUR EXPERIENCE").font(.caption.bold()).foregroundStyle(mint)
-                    Spacer()
-                    if importingResume { ProgressView().controlSize(.small); Text("Reading résumé…").font(.caption) }
-                    Button { choosingResume = true } label: { Label("Import résumé", systemImage: "square.and.arrow.down") }.disabled(importingResume)
-                }
-                if !importError.isEmpty { Text(importError).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
-                TextEditor(text: $resume).font(.body).frame(height: 130).border(.white.opacity(0.1))
-                Text("Import PDF, DOCX, RTF, or text, or paste your experience here. Saved automatically and used for talking points.").font(.caption).foregroundStyle(.secondary)
-                Text("ROLE & COMPANY").font(.caption.bold()).foregroundStyle(mint)
-                TextEditor(text: $role).font(.body).frame(height: 90).border(.white.opacity(0.1))
+                ExperienceSettingsView(importing: $importingResume)
                 Divider()
                 ProviderSettingsView()
                 Divider()
@@ -353,24 +341,48 @@ struct SetupView: View {
             }.padding(28)
         }.frame(width: 600, height: 700)
             .interactiveDismissDisabled(importingResume)
-            .fileImporter(isPresented: $choosingResume, allowedContentTypes: ResumeImporter.allowedTypes) { result in
-                switch result {
-                case .success(let url):
-                    importingResume = true; importError = ""
-                    Task {
-                        defer { importingResume = false }
-                        do { importedResume = try await Task.detached(priority: .userInitiated) { try ResumeImporter.extract(from: url) }.value }
-                        catch { importError = error.localizedDescription }
-                    }
-                case .failure(let error): importError = error.localizedDescription
-                }
+    }
+}
+
+struct ExperienceSettingsView: View {
+    @Binding var importing: Bool
+    @AppStorage("resume") private var resume = ""
+    @AppStorage("role") private var role = ""
+    @State private var choosingResume = false
+    @State private var importedResume: ImportedResume?
+    @State private var importError = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("YOUR EXPERIENCE").font(.caption.bold()).foregroundStyle(mint)
+                Spacer()
+                if importing { ProgressView().controlSize(.small); Text("Reading résumé…").font(.caption) }
+                Button { choosingResume = true } label: { Label("Import résumé", systemImage: "square.and.arrow.down") }.disabled(importing)
             }
-            .sheet(item: $importedResume) { imported in
-                ResumePreview(imported: imported, hasExperience: !resume.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) { text, append in
-                    resume = append ? resume.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + text : text
-                    importedResume = nil
+            if !importError.isEmpty { Text(importError).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
+            TextEditor(text: $resume).font(.body).frame(height: 130).border(.white.opacity(0.1))
+            Text("Import PDF, DOCX, RTF, or text, or paste your experience here. Saved automatically and used for talking points.").font(.caption).foregroundStyle(.secondary)
+            Text("ROLE & COMPANY").font(.caption.bold()).foregroundStyle(mint).padding(.top, 6)
+            TextEditor(text: $role).font(.body).frame(height: 90).border(.white.opacity(0.1))
+        }
+        .fileImporter(isPresented: $choosingResume, allowedContentTypes: ResumeImporter.allowedTypes) { result in
+            switch result {
+            case .success(let url):
+                importing = true; importError = ""
+                Task {
+                    defer { importing = false }
+                    do { importedResume = try await Task.detached(priority: .userInitiated) { try ResumeImporter.extract(from: url) }.value }
+                    catch { importError = error.localizedDescription }
                 }
+            case .failure(let error): importError = error.localizedDescription
             }
+        }
+        .sheet(item: $importedResume) { imported in
+            ResumePreview(imported: imported, hasExperience: !resume.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) { text, append in
+                resume = append ? resume.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + text : text
+                importedResume = nil
+            }
+        }
     }
 }
 
