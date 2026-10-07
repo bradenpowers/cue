@@ -37,76 +37,87 @@ final class Session: ObservableObject {
     @Published var error = ""
     @Published var setup = false
     @Published var history: [String] = []
-    let audio = AudioCapture()
+    let them = AudioCapture(speaker: .them) // Mac audio on a call; the only microphone in person
+    let me = AudioCapture(speaker: .me) // microphone on a call
+    var lines: [Line] { merged(them, me) }
     private var panel: NSPanel?
     private var pending: Task<Void, Never>?
-    private var pauses: AnyCancellable?
+    private var run = UUID()
     private var autosave: AnyCancellable?
     private var interview = Interview()
     private let store = InterviewStore()
-    private var assessing = false
-    private var checkedLength = 0 // transcript length at the last automatic check
-    private var answeredThrough = 0 // transcript length when the last automatic suggestion fired
+    private var answered = 0 // interviewer lines already covered by an automatic answer
 
     init() {
-        // A pause in recognized speech is the cue to ask whether the interviewer just asked something.
-        pauses = audio.$partial.debounce(for: .seconds(1.5), scheduler: RunLoop.main).sink { [weak self] _ in self?.listen() }
-        autosave = Publishers.CombineLatest4(audio.$segments, audio.$partial, $history, $notes).dropFirst()
+        them.onUtterance = { [weak self] _ in self?.heard() }
+        autosave = Publishers.CombineLatest4(them.$segments, me.$segments, $history, $notes).dropFirst()
             .debounce(for: .seconds(2), scheduler: RunLoop.main).sink { [weak self] _ in self?.save() }
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.save() }
         }
     }
 
+    func startListening(call: Bool) async {
+        await them.start(system: call)
+        if call { await me.start(system: false) }
+    }
+    func stopListening() async { await them.stop(); await me.stop() }
+
     private func save() {
         interview.role = UserDefaults.standard.string(forKey: "role") ?? ""
-        interview.transcript = audio.transcript; interview.talkingPoints = history; interview.notes = notes
+        interview.transcript = lines.transcript; interview.talkingPoints = history; interview.notes = notes
         do { try store.save(interview) } catch { self.error = "Could not save this interview: \(error.localizedDescription)" }
     }
 
     func suggest() {
         guard !busy else { return }
-        guard !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !audio.transcript.isEmpty else {
+        guard !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !lines.isEmpty else {
             error = "Start listening or type a question first."; return
         }
-        run(question: question.isEmpty ? nil : question, assessment: nil)
+        start(question: question.isEmpty ? nil : question, assessment: nil)
     }
 
-    private func listen() {
-        let transcript = audio.transcript
-        guard UserDefaults.standard.bool(forKey: "typesafe.auto"), !busy, !assessing, transcript.count > checkedLength else { return }
-        let key: String
-        do { key = try Credentials.read(account: TypeSafeAPI.account, label: "TypeSafe") } catch { self.error = error.localizedDescription; return }
-        guard !key.isEmpty else { return }
-        checkedLength = transcript.count
-        let latest = String(transcript.dropFirst(min(answeredThrough, transcript.count)).suffix(800))
-        guard latest.split(separator: " ").count >= 3 else { return }
-        let earlier = String(transcript.dropLast(latest.count).suffix(1500))
+    // The interviewer finished speaking: answer right away if it was a question.
+    private func heard() {
+        let unanswered = them.segments.dropFirst(answered)
+        guard let first = unanswered.first, let last = unanswered.last else { return }
+        let latest = String(unanswered.map(\.text).joined(separator: " ").suffix(800))
+        if last.soundsLikeQuestion { return answerAutomatically(latest, assessment: nil) }
+        let key = (try? Credentials.read(account: TypeSafeAPI.account, label: "TypeSafe")) ?? ""
+        guard !key.isEmpty, latest.split(separator: " ").count >= 3 else { return }
+        let heardCount = them.segments.count
         let defaults = UserDefaults.standard
-        let lines = TypeSafeAPI.resumeLines(defaults.string(forKey: "resume") ?? "")
-        assessing = true
+        let earlier = String(lines.filter { $0.start < first.start }.transcript.suffix(1500))
         Task {
-            defer { assessing = false }
             do {
-                let assessment = try await TypeSafeAPI.assess(key: key, role: defaults.string(forKey: "role") ?? "", earlier: earlier, latest: latest, lines: lines, detectQuestion: true)
-                guard assessment.asksQuestion >= TypeSafeAPI.questionThreshold, assessment.kind != .smallTalk, !busy else { return }
-                answeredThrough = transcript.count
-                run(question: latest, assessment: assessment)
+                let assessment = try await TypeSafeAPI.assess(key: key, role: defaults.string(forKey: "role") ?? "", earlier: earlier, latest: latest,
+                                                              lines: TypeSafeAPI.resumeLines(defaults.string(forKey: "resume") ?? ""), detectQuestion: true)
+                // A newer line is already being checked; let that one decide.
+                guard them.segments.count == heardCount, answered < heardCount,
+                      assessment.asksQuestion >= TypeSafeAPI.questionThreshold, assessment.kind != .smallTalk else { return }
+                answerAutomatically(latest, assessment: assessment)
             } catch is CancellationError {
             } catch { self.error = error.localizedDescription }
         }
     }
 
-    private func run(question typed: String?, assessment: Assessment?) {
+    private func answerAutomatically(_ question: String, assessment: Assessment?) {
+        answered = them.segments.count
+        pending?.cancel() // the newest question wins
+        start(question: question, assessment: assessment)
+    }
+
+    private func start(question typed: String?, assessment: Assessment?) {
+        let id = UUID(); run = id
         busy = true; error = ""
         let q = typed ?? "Help me respond to the latest interview question."
-        let transcript = audio.transcript
+        let transcript = lines.transcript
         let defaults = UserDefaults.standard
         let configuration = LLMConfiguration.load(from: defaults)
         let resume = defaults.string(forKey: "resume") ?? ""
         let role = defaults.string(forKey: "role") ?? ""
         pending = Task {
-            defer { busy = false }
+            defer { if run == id { busy = false } }
             do {
                 var assessment = assessment
                 var note = ""
@@ -130,10 +141,11 @@ final class Session: ObservableObject {
     }
     func cancel() { pending?.cancel() }
     func clear() async {
-        pending?.cancel(); await audio.stop()
+        pending?.cancel(); await stopListening()
         save(); interview = Interview()
-        question = ""; notes = ""; answer = ""; history = []; audio.segments = []; audio.error = ""; error = ""
-        checkedLength = 0; answeredThrough = 0
+        question = ""; notes = ""; answer = ""; history = []; error = ""
+        for capture in [them, me] { capture.segments = []; capture.error = "" }
+        answered = 0
     }
     func export() {
         let panel = NSSavePanel(); panel.allowedContentTypes = [.plainText]; panel.nameFieldStringValue = "Cue session.md"
@@ -192,10 +204,10 @@ struct Workspace: View {
                     Button { session.export() } label: { Image(systemName: "square.and.arrow.up") }.help("Export session")
                     Button { clearConfirmation = true } label: { Image(systemName: "plus") }.help("New session")
                 }
-                CaptureControls(audio: session.audio)
+                CaptureControls(them: session.them, me: session.me)
                 if !session.error.isEmpty { Text(session.error).font(.callout).foregroundStyle(.orange).textSelection(.enabled) }
                 HStack(alignment: .top, spacing: 16) {
-                    TranscriptView(audio: session.audio).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    TranscriptView(them: session.them, me: session.me).frame(maxWidth: .infinity, maxHeight: .infinity)
                     VStack(alignment: .leading, spacing: 14) {
                         HStack {
                             Label("Talking points", systemImage: "sparkles").font(.system(size: 14, weight: .semibold))
@@ -209,8 +221,8 @@ struct Workspace: View {
                                 VStack(alignment: .leading, spacing: 16) {
                                     Image(systemName: "sparkle").font(.system(size: 32)).foregroundStyle(mint).padding(.top, 28)
                                     Text("Find your next thought.").font(.system(size: 21, weight: .medium))
-                                    Text("Listen to a question, then ask Cue for a concise starting point grounded in your experience.").foregroundStyle(.secondary).lineSpacing(5)
-                                    Text("01   Add your experience in Setup\n\n02   Choose an audio source\n\n03   Ask for talking points").font(.system(size: 12)).foregroundStyle(.secondary).padding(.top, 12)
+                                    Text("When the interviewer asks a question, Cue writes a concise starting point grounded in your experience.").foregroundStyle(.secondary).lineSpacing(5)
+                                    Text("01   Add your experience in Setup\n\n02   Start listening\n\n03   Talking points appear when you’re asked a question").font(.system(size: 12)).foregroundStyle(.secondary).padding(.top, 12)
                                 }.frame(maxWidth: .infinity, alignment: .leading)
                             } else { Text(session.answer).textSelection(.enabled).lineSpacing(6).frame(maxWidth: .infinity, alignment: .leading) }
                         }
@@ -241,45 +253,57 @@ struct Workspace: View {
 }
 
 struct CaptureControls: View {
-    @ObservedObject var audio: AudioCapture
-    @State private var system = true
+    @EnvironmentObject var session: Session
+    @ObservedObject var them: AudioCapture
+    @ObservedObject var me: AudioCapture
+    @State private var call = true
     var body: some View {
+        let running = them.running || me.running, starting = them.starting || me.starting
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 14) {
-                Image(systemName: audio.running ? "waveform" : "mic").foregroundStyle(mint)
+                Image(systemName: running ? "waveform" : "mic").foregroundStyle(mint)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(audio.running ? "Listening live" : "Ready when you are").font(.system(size: 13, weight: .semibold))
-                    Text(system ? "Mac audio · hear the other side of your call" : "Microphone · hear your voice and nearby speakers").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text(running ? "Listening live" : "Ready when you are").font(.system(size: 13, weight: .semibold))
+                    Text(call ? "Video call · your mic is you, Mac audio is the interviewer" : "In person · the microphone hears everyone as the interviewer").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Picker("Source", selection: $system) { Text("Mac audio").tag(true); Text("Microphone").tag(false) }.labelsHidden().frame(width: 125).disabled(audio.running || audio.starting)
-                Button(audio.starting ? "Connecting…" : audio.running ? "Stop listening" : "Start listening") {
-                    Task { if audio.running { await audio.stop() } else { await audio.start(system: system) } }
-                }.disabled(audio.starting).buttonStyle(.bordered).tint(mint)
+                Picker("Source", selection: $call) { Text("Video call").tag(true); Text("In person").tag(false) }.labelsHidden().frame(width: 125).disabled(running || starting)
+                Button(starting ? "Connecting…" : running ? "Stop listening" : "Start listening") {
+                    Task { if running { await session.stopListening() } else { await session.startListening(call: call) } }
+                }.disabled(starting).buttonStyle(.bordered).tint(mint)
             }
-            if !audio.error.isEmpty { Text(audio.error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
+            ForEach([them.error, me.error].filter { !$0.isEmpty }, id: \.self) { Text($0).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
         }.padding(16).background(surface, in: RoundedRectangle(cornerRadius: 12))
     }
 }
 
 struct TranscriptView: View {
-    @ObservedObject var audio: AudioCapture
+    @ObservedObject var them: AudioCapture
+    @ObservedObject var me: AudioCapture
     var body: some View {
+        let running = them.running || me.running, lines = merged(them, me)
         VStack(alignment: .leading, spacing: 16) {
-            HStack { Label("Live transcript", systemImage: "text.alignleft").font(.system(size: 14, weight: .semibold)); Spacer(); Text(audio.running ? "LIVE" : "IDLE").font(.system(size: 9, weight: .bold)).tracking(1).foregroundStyle(audio.running ? mint : .secondary) }
+            HStack { Label("Live transcript", systemImage: "text.alignleft").font(.system(size: 14, weight: .semibold)); Spacer(); Text(running ? "LIVE" : "IDLE").font(.system(size: 9, weight: .bold)).tracking(1).foregroundStyle(running ? mint : .secondary) }
             ScrollViewReader { proxy in
                 ScrollView {
-                    if audio.transcript.isEmpty {
+                    if lines.isEmpty {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("Every question,\na little more space.").font(.system(size: 22, weight: .medium)).padding(.top, 28)
                             Text("Your conversation will appear here when you start listening.").foregroundStyle(.secondary).lineSpacing(5)
-                            Text("Mac audio requires Screen & System Audio Recording permission. Only audio is processed. English transcription may use Apple’s service when on-device recognition is unavailable.").font(.system(size: 11)).foregroundStyle(.tertiary).lineSpacing(4).padding(.top, 12)
+                            Text("Mac audio requires Screen & System Audio Recording permission. Use headphones on calls so your mic hears only you. Only audio is processed. English transcription may use Apple’s service when on-device recognition is unavailable.").font(.system(size: 11)).foregroundStyle(.tertiary).lineSpacing(4).padding(.top, 12)
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     } else {
-                        Text(audio.transcript).textSelection(.enabled).lineSpacing(7).frame(maxWidth: .infinity, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 12) {
+                            ForEach(lines) { line in
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(line.speaker.label.uppercased()).font(.system(size: 9, weight: .bold)).tracking(1).foregroundStyle(line.speaker == .them ? mint : .secondary)
+                                    Text(line.text).textSelection(.enabled).lineSpacing(5)
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
                     }
                     Color.clear.frame(height: 1).id("bottom")
-                }.onChange(of: audio.partial) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
+                }.onChange(of: them.partial + me.partial) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
             }
         }.padding(20).background(surface, in: RoundedRectangle(cornerRadius: 16))
     }

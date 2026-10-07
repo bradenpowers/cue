@@ -83,7 +83,7 @@ enum AssistantAPI {
     private static let session = URLSession(configuration: .ephemeral, delegate: NoRedirectDelegate(), delegateQueue: nil)
 
     static func suggest(configuration: LLMConfiguration, key: String, resume: String, role: String, transcript: String, question: String, guidance: String? = nil) async throws -> String {
-        let input = "EXPERIENCE:\n\(resume)\nROLE:\n\(role)\nRECENT TRANSCRIPT:\n\(transcript.suffix(12000))\nQUESTION / REQUEST:\n\(question)"
+        let input = "EXPERIENCE:\n\(resume)\nROLE:\n\(role)\nRECENT TRANSCRIPT (Interviewer = the other side, Me = the candidate):\n\(transcript.suffix(12000))\nQUESTION / REQUEST:\n\(question)"
         return try await generate(configuration: configuration, key: key, instructions: guidance.map { "\(instructions) \($0)" } ?? instructions, input: input)
     }
 

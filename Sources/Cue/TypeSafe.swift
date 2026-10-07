@@ -104,7 +104,6 @@ enum TypeSafeAPI {
 }
 
 struct TypeSafeSettingsView: View {
-    @AppStorage("typesafe.auto") private var auto = false
     @State private var key = ""
     @State private var message = ""
     @State private var messageIsError = false
@@ -128,9 +127,8 @@ struct TypeSafeSettingsView: View {
                 if testTask != nil { ProgressView().controlSize(.small); Button("Cancel") { testTask?.cancel() } }
                 Text("Sends a short sample question; no résumé or transcript.").font(.caption).foregroundStyle(.secondary)
             }
-            Toggle("Suggest talking points automatically when the interviewer asks a question", isOn: $auto)
             if !message.isEmpty { Text(message).font(.caption).foregroundStyle(messageIsError ? .orange : mint) }
-            Text("With a key, Cue asks TypeSafe what kind of question was asked and which résumé lines fit it, so your AI provider receives only the relevant experience. This sends your role, résumé lines, and recent transcript to TypeSafe. Automatic mode checks each pause in the conversation.")
+            Text("With a key, Cue asks TypeSafe what kind of question was asked and which résumé lines fit it, so your AI provider receives only the relevant experience. This sends your role, résumé lines, and recent transcript to TypeSafe. It also catches interviewer questions that don’t sound like questions, such as “I’d love to hear about your last project.”")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
         .onAppear {
