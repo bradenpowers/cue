@@ -108,6 +108,7 @@ struct TypeSafeSettingsView: View {
     @State private var key = ""
     @State private var message = ""
     @State private var messageIsError = false
+    @State private var testTask: Task<Void, Never>?
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("TYPESAFE (OPTIONAL)").font(.caption.bold()).foregroundStyle(mint)
@@ -121,6 +122,11 @@ struct TypeSafeSettingsView: View {
                         message = value.isEmpty ? "TypeSafe key removed." : "TypeSafe key saved in Cue."
                     } catch { message = error.localizedDescription; messageIsError = true }
                 }
+            }.disabled(testTask != nil)
+            HStack {
+                Button(testTask == nil ? "Test key" : "Testing…") { testKey() }.disabled(testTask != nil)
+                if testTask != nil { ProgressView().controlSize(.small); Button("Cancel") { testTask?.cancel() } }
+                Text("Sends a short sample question; no résumé or transcript.").font(.caption).foregroundStyle(.secondary)
             }
             Toggle("Suggest talking points automatically when the interviewer asks a question", isOn: $auto)
             if !message.isEmpty { Text(message).font(.caption).foregroundStyle(messageIsError ? .orange : mint) }
@@ -130,6 +136,23 @@ struct TypeSafeSettingsView: View {
         .onAppear {
             do { key = try Credentials.read(account: TypeSafeAPI.account, label: "TypeSafe") }
             catch { message = error.localizedDescription; messageIsError = true }
+        }
+        .onDisappear { testTask?.cancel() }
+    }
+
+    private func testKey() {
+        message = ""
+        let testKey = key
+        testTask = Task {
+            defer { testTask = nil }
+            do {
+                _ = try await TypeSafeAPI.assess(key: testKey, role: "", earlier: "", latest: "Tell me about yourself.", lines: [], detectQuestion: false)
+                try Task.checkCancellation()
+                message = "TypeSafe key works."; messageIsError = false
+            } catch {
+                if Task.isCancelled { message = "Key test canceled."; messageIsError = false }
+                else { message = error.localizedDescription; messageIsError = true }
+            }
         }
     }
 }
