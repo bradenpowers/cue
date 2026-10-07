@@ -29,7 +29,7 @@ struct ProviderSettingsView: View {
                         let value = key.trimmingCharacters(in: .whitespacesAndNewlines)
                         try Credentials.save(value, for: provider)
                         key = value; keyDrafts[provider] = value
-                        message = value.isEmpty ? "Key removed for \(provider.label)." : "\(provider.label) key saved in macOS Keychain."
+                        message = value.isEmpty ? "Key removed for \(provider.label)." : "\(provider.label) key saved in Cue."
                         messageIsError = false
                     } catch { show(error) }
                 }
@@ -42,7 +42,7 @@ struct ProviderSettingsView: View {
             if !message.isEmpty { Text(message).font(.caption).foregroundStyle(messageIsError ? .orange : mint).textSelection(.enabled) }
             Text(provider == .local
                  ? "Talking points go to the local server you configure. Keys are optional unless your server requires one. Speech recognition may still use Apple’s service."
-                 : "Talking points send your experience, role, question, and recent transcript to \(provider.label). Use a provider API key; keys are saved separately in macOS Keychain. Audio is not sent to this provider.")
+                 : "Talking points send your experience, role, question, and recent transcript to \(provider.label). Use a provider API key; keys are saved on this Mac in Cue’s settings. Audio is not sent to this provider.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Text("Provider and model settings save automatically. Click Save key after entering a key; Test connection can use the unsaved key above.").font(.caption).foregroundStyle(.secondary)
         }

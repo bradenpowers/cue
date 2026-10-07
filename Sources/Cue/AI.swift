@@ -1,5 +1,4 @@
 import Foundation
-import Security
 
 enum CueError: LocalizedError {
     case message(String)
@@ -25,7 +24,7 @@ enum LLMProvider: String, CaseIterable, Identifiable {
         case .local: return ""
         }
     }
-    // Preserve the original OpenAI preference and Keychain account.
+    // Preserve the original OpenAI preference key.
     var modelKey: String { self == .openai ? "model" : "llm.\(rawValue).model" }
     var requiresKey: Bool { self != .local }
 }
@@ -42,38 +41,24 @@ struct LLMConfiguration {
     }
 }
 
+// API keys live in Cue's own settings file (readable only by you), so macOS never asks for Keychain access.
 enum Credentials {
-    // Keep the original service identifier so existing API keys remain accessible.
-    static func query(for provider: LLMProvider) -> [String: Any] { query(account: provider.rawValue) }
-    static func query(account: String) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "local.butler.desktop", kSecAttrAccount as String: account]
-    }
+    static var file = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Cue/keys.json")
     static func read(for provider: LLMProvider) throws -> String { try read(account: provider.rawValue, label: provider.label) }
     static func save(_ value: String, for provider: LLMProvider) throws { try save(value, account: provider.rawValue) }
     static func read(account: String, label: String) throws -> String {
-        var q = query(account: account); q[kSecReturnData as String] = true
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(q as CFDictionary, &result)
-        if status == errSecItemNotFound { return "" }
-        guard status == errSecSuccess, let data = result as? Data, let value = String(data: data, encoding: .utf8) else {
-            throw CueError.message("Could not read the \(label) key from Keychain (\(status)).")
-        }
-        return value
+        do { return try all()[account] ?? "" } catch { throw CueError.message("Could not read the \(label) key from Cue's settings (\(error.localizedDescription)).") }
     }
     static func save(_ value: String, account: String) throws {
-        let query = query(account: account)
-        if value.isEmpty {
-            let status = SecItemDelete(query as CFDictionary)
-            guard status == errSecSuccess || status == errSecItemNotFound else { throw CueError.message("Could not remove the key from Keychain (\(status)).") }
-            return
-        }
-        let data = Data(value.utf8)
-        var status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-        if status == errSecItemNotFound {
-            var q = query; q[kSecValueData as String] = data
-            status = SecItemAdd(q as CFDictionary, nil)
-        }
-        guard status == errSecSuccess else { throw CueError.message("Could not save the API key to Keychain (\(status)).") }
+        do {
+            var keys = try all(); keys[account] = value.isEmpty ? nil : value
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(keys).write(to: file, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        } catch { throw CueError.message("Could not save the API key (\(error.localizedDescription)).") }
+    }
+    private static func all() throws -> [String: String] {
+        do { return try JSONDecoder().decode([String: String].self, from: Data(contentsOf: file)) } catch CocoaError.fileReadNoSuchFile { return [:] }
     }
 }
 

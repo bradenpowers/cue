@@ -1,5 +1,4 @@
 import XCTest
-import Security
 @testable import Cue
 
 final class ProviderTests: XCTestCase {
@@ -93,8 +92,20 @@ final class ProviderTests: XCTestCase {
         XCTAssertEqual(LLMConfiguration.load(from: defaults).model, "my-claude-model")
         defaults.set("openai", forKey: "llm.provider")
         XCTAssertEqual(LLMConfiguration.load(from: defaults).model, "my-existing-model")
-        XCTAssertEqual(Credentials.query(for: .openai)[kSecAttrAccount as String] as? String, "openai")
-        let accounts = Set(LLMProvider.allCases.compactMap { Credentials.query(for: $0)[kSecAttrAccount as String] as? String })
-        XCTAssertEqual(accounts.count, 4)
+    }
+    func testCredentialsStoredInAppFile() throws {
+        let original = Credentials.file
+        Credentials.file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("keys.json")
+        defer { try? FileManager.default.removeItem(at: Credentials.file.deletingLastPathComponent()); Credentials.file = original }
+        XCTAssertEqual(try Credentials.read(for: .openai), "")
+        try Credentials.save("sk-openai", for: .openai)
+        try Credentials.save("ts-key", account: "typesafe")
+        XCTAssertEqual(try Credentials.read(for: .openai), "sk-openai")
+        XCTAssertEqual(try Credentials.read(for: .claude), "")
+        XCTAssertEqual(try Credentials.read(account: "typesafe", label: "TypeSafe"), "ts-key")
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: Credentials.file.path)[.posixPermissions] as? Int, 0o600)
+        try Credentials.save("", for: .openai)
+        XCTAssertEqual(try Credentials.read(for: .openai), "")
+        XCTAssertEqual(try Credentials.read(account: "typesafe", label: "TypeSafe"), "ts-key")
     }
 }

@@ -118,7 +118,7 @@ struct TypeSafeSettingsView: View {
                         let value = key.trimmingCharacters(in: .whitespacesAndNewlines)
                         try Credentials.save(value, account: TypeSafeAPI.account)
                         key = value; messageIsError = false
-                        message = value.isEmpty ? "TypeSafe key removed." : "TypeSafe key saved in macOS Keychain."
+                        message = value.isEmpty ? "TypeSafe key removed." : "TypeSafe key saved in Cue."
                     } catch { message = error.localizedDescription; messageIsError = true }
                 }
             }
