@@ -1,5 +1,6 @@
 pub mod ai;
 pub mod error;
+pub mod resume;
 pub mod store;
 pub mod transcript;
 pub mod typesafe;
