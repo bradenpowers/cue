@@ -1,9 +1,9 @@
 use crate::ai::{self, LLMConfiguration, LLMProvider};
 use crate::audio::{self, Capture, Sink};
-use crate::error::{err, CueError, Result};
+use crate::error::{CueError, Result};
 use crate::resume::{self, ImportedResume};
 use crate::session::{experience_for, suffix, CaptureState, Heard, Session, Snapshot};
-use crate::stt::{Recognizer, SttEvent};
+use crate::stt::{self, Recognizer, SttEvent};
 use crate::store::{Interview, Settings, Store};
 use crate::transcript::{transcript, Speaker};
 use crate::typesafe::{self, Assessment, QuestionKind, QUESTION_THRESHOLD};
@@ -423,11 +423,30 @@ pub fn delete_interview(app: AppHandle, id: String) -> Result<()> {
     state(&app).store.delete_interview(id)
 }
 
-// Task 11 implements this.
 #[tauri::command]
-pub fn download_whisper_model(name: String) -> Result<()> {
-    let _ = name;
-    err("Speech model download isn't available yet.")
+pub async fn download_whisper_model(app: AppHandle, name: String) -> Result<()> {
+    let s = state(&app);
+    let set = |download: Option<f32>, error: Option<String>| {
+        let mut session = s.session.lock().unwrap();
+        session.download = download;
+        if let Some(e) = error {
+            session.error = e;
+        }
+        drop(session);
+        emit(&app);
+    };
+    set(Some(0.0), None);
+    let result = stt::model::download(&s.store.dir, &name, |p| set(Some(p), None)).await;
+    match result {
+        Ok(_) => {
+            set(None, None);
+            Ok(())
+        }
+        Err(e) => {
+            set(None, Some(e.0.clone()));
+            Err(e)
+        }
+    }
 }
 
 #[tauri::command]

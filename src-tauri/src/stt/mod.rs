@@ -1,3 +1,4 @@
+pub mod model;
 pub mod vad;
 
 mod stub; // Tasks 12 (macOS) and 13 (Windows) swap in their real recognizers here.
