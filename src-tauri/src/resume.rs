@@ -13,6 +13,9 @@ pub const MAX_CHARS: usize = 100_000;
 
 const TOO_LARGE: &str = "This file is too large. Choose a résumé smaller than 10 MB.";
 const UNREADABLE_DOC: &str = "This document could not be read. Try exporting it as PDF or plain text.";
+pub const UNREADABLE_PDF: &str = "This PDF could not be read. Try exporting it again.";
+/// Uncompressed cap on word/document.xml, so a zip bomb can't exhaust memory.
+const MAX_DOCX_XML: u64 = 50 * 1024 * 1024;
 
 pub fn extract(path: &Path) -> Result<ImportedResume> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
@@ -33,13 +36,16 @@ pub fn extract(path: &Path) -> Result<ImportedResume> {
     let raw = match ext.as_str() {
         "pdf" => {
             let Ok(doc) = lopdf::Document::load_mem(&data) else {
-                return err("This PDF could not be read. Try exporting it again.");
+                return err(UNREADABLE_PDF);
             };
             if doc.is_encrypted() {
                 return err("This PDF is password-protected. Export an unlocked copy, then import it.");
             }
+            // pdf-extract panics on some real-world PDFs; treat that as unreadable.
+            let extracted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pdf_extract::extract_text_from_mem(&data)));
+            let Ok(extracted) = extracted else { return err(UNREADABLE_PDF) };
             // A text-extraction failure on a loadable PDF is treated as "no text" (e.g. scans).
-            pdf_extract::extract_text_from_mem(&data).unwrap_or_default()
+            extracted.unwrap_or_default()
         }
         "docx" => docx_to_text(&data).ok_or_else(|| CueError(UNREADABLE_DOC.into()))?,
         "rtf" => rtf_to_text(&String::from_utf8_lossy(&data)),
@@ -83,7 +89,10 @@ fn docx_to_text(data: &[u8]) -> Option<String> {
     use std::io::Read;
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(data)).ok()?;
     let mut xml = String::new();
-    zip.by_name("word/document.xml").ok()?.read_to_string(&mut xml).ok()?;
+    zip.by_name("word/document.xml").ok()?.take(MAX_DOCX_XML + 1).read_to_string(&mut xml).ok()?;
+    if xml.len() as u64 > MAX_DOCX_XML {
+        return None;
+    }
     let mut reader = quick_xml::Reader::from_str(&xml);
     let (mut out, mut in_t) = (String::new(), false);
     loop {
@@ -273,6 +282,21 @@ mod tests {
             msg(extract(&w("broken.docx", b"not a Word document"))),
             "This document could not be read. Try exporting it as PDF or plain text."
         );
+    }
+
+    #[test]
+    fn rejects_docx_zip_bomb() {
+        use std::io::Write;
+        let d = TempDir::new().unwrap();
+        let p = d.path().join("bomb.docx");
+        let mut z = zip::ZipWriter::new(fs::File::create(&p).unwrap());
+        z.start_file("word/document.xml", zip::write::SimpleFileOptions::default()).unwrap();
+        let block = vec![b' '; 1024 * 1024];
+        for _ in 0..=MAX_DOCX_XML / block.len() as u64 {
+            z.write_all(&block).unwrap();
+        }
+        z.finish().unwrap();
+        assert_eq!(msg(extract(&p)), UNREADABLE_DOC);
     }
 
     #[test]

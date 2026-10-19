@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { readKey, saveKey, testProvider } from '../api'
+import { isMac, readKey, saveKey, testProvider } from '../api'
 import { defaultModels, modelFor, providerLabels, providers, type LLMProvider, type Settings } from '../types'
 import type { UpdateSettings } from './Workspace'
 
@@ -107,8 +107,8 @@ export default function ProviderSettings({ settings, update }: { settings: Setti
       {message && <div className={`small selectable ${isError ? 'warn' : 'mint'}`}>{message}</div>}
       <div className="small muted">
         {provider === 'local'
-          ? 'Talking points go to the local server you configure. Keys are optional unless your server requires one. Speech recognition may still use Apple’s service.'
-          : `Talking points send your experience, role, question, and recent transcript to ${label}. Use a provider API key; keys are saved on this Mac in Cue’s settings. Audio is not sent to this provider.`}
+          ? 'Talking points go to the local server you configure. Keys are optional unless your server requires one. ' + (isMac ? 'Speech recognition may still use Apple’s service.' : 'Speech is transcribed locally with Whisper.')
+          : `Talking points send your experience, role, question, and recent transcript to ${label}. Use a provider API key; keys are saved on this ${isMac ? 'Mac' : 'PC'} in Cue’s settings. Audio is not sent to this provider.`}
       </div>
       <div className="small muted">Provider and model settings save automatically. Click Save key after entering a key; Test connection can use the unsaved key above.</div>
     </section>

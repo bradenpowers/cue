@@ -199,6 +199,7 @@ fn on_result(shared: &Weak<Shared>, generation: u64, result: Option<&SFSpeechRec
     if !st.running || st.generation != generation {
         return;
     }
+    let mut is_final = false;
     if let Some(result) = result {
         let text = unsafe { result.bestTranscription().formattedString() }.to_string();
         let event = if !text.is_empty() {
@@ -210,10 +211,15 @@ fn on_result(shared: &Weak<Shared>, generation: u64, result: Option<&SFSpeechRec
             None
         };
         st = shared.emit(st, event);
-        if unsafe { result.isFinal() } && st.running && st.generation == generation {
-            let event = shared.finish_utterance(&mut st);
-            drop(shared.emit(st, event));
-        }
+        is_final = unsafe { result.isFinal() };
+    }
+    // Same order as the Swift app: a final result wins; otherwise an error ends the request.
+    if !st.running || st.generation != generation {
+        return;
+    }
+    if is_final {
+        let event = shared.finish_utterance(&mut st);
+        drop(shared.emit(st, event));
     } else if let Some(error) = error {
         st.generation += 1; // only one error per request
         drop(st);

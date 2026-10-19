@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { startListening, stopListening } from '../api'
+import { isMac, startListening, stopListening } from '../api'
 import type { Snapshot } from '../types'
 
 export default function CaptureControls({ state }: { state: Snapshot }) {
@@ -13,7 +13,7 @@ export default function CaptureControls({ state }: { state: Snapshot }) {
         <div className="grow">
           <div className="strong">{running ? 'Listening live' : 'Ready when you are'}</div>
           <div className="small muted">
-            {call ? 'Video call · your mic is you, Mac audio is the interviewer' : 'In person · the microphone hears everyone as the interviewer'}
+            {call ? `Video call · your mic is you, ${isMac ? 'Mac' : 'computer'} audio is the interviewer` : 'In person · the microphone hears everyone as the interviewer'}
           </div>
         </div>
         <select aria-label="Source" value={call ? 'call' : 'person'} onChange={(e) => setCall(e.target.value === 'call')} disabled={running || starting}>

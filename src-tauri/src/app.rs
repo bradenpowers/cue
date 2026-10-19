@@ -423,7 +423,12 @@ pub async fn test_typesafe(app: AppHandle, key: String) -> Result<()> {
 
 #[tauri::command]
 pub async fn import_resume(path: String) -> Result<ImportedResume> {
-    resume::extract(Path::new(&path))
+    // Off the async runtime, and a panic must still answer so the UI's "importing" state clears.
+    tauri::async_runtime::spawn_blocking(move || std::panic::catch_unwind(|| resume::extract(Path::new(&path))))
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .unwrap_or_else(|| err(resume::UNREADABLE_PDF))
 }
 
 #[tauri::command]

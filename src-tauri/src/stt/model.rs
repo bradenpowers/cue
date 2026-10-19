@@ -1,6 +1,7 @@
 use crate::error::{err, CueError, Result};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
 pub struct ModelInfo {
@@ -52,15 +53,27 @@ async fn fetch(name: &str, part: &Path, progress: &impl Fn(f32)) -> Result<()> {
     let fail = |e: reqwest::Error| CueError(e.to_string());
     std::fs::create_dir_all(part.parent().unwrap())?;
     let url = format!("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{name}.bin");
-    let mut resp = reqwest::Client::new().get(url).send().await.and_then(|r| r.error_for_status()).map_err(fail)?;
+    // Timeouts so a stalled connection fails instead of hanging the download forever.
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .read_timeout(Duration::from_secs(30))
+        .build()
+        .map_err(fail)?;
+    let mut resp = client.get(url).send().await.and_then(|r| r.error_for_status()).map_err(fail)?;
     let total = resp.content_length().unwrap_or(0) as f32;
     let mut file = tokio::fs::File::create(part).await?;
-    let mut received = 0f32;
+    let (mut received, mut last_percent) = (0f32, -1);
     while let Some(chunk) = resp.chunk().await.map_err(fail)? {
         file.write_all(&chunk).await?;
         received += chunk.len() as f32;
         if total > 0.0 {
-            progress((received / total).min(1.0));
+            let fraction = (received / total).min(1.0);
+            // At most one callback per whole-percent change.
+            let percent = (fraction * 100.0) as i32;
+            if percent != last_percent {
+                last_percent = percent;
+                progress(fraction);
+            }
         }
     }
     file.flush().await?;

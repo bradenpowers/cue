@@ -104,12 +104,16 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, bytes)?;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    // Keys are owner-only from creation, never briefly world-readable.
     #[cfg(unix)]
     if path.file_name().is_some_and(|n| n == "keys.json") {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        use std::os::unix::fs::OpenOptionsExt;
+        let _ = std::fs::remove_file(&tmp); // mode only applies when the file is created
+        opts.mode(0o600);
     }
+    std::io::Write::write_all(&mut opts.open(&tmp)?, bytes)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
 }

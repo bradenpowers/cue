@@ -46,9 +46,11 @@ pub fn run() {
         .on_window_event(app::on_window_event)
         .build(tauri::generate_context!())
         .expect("error while running Cue")
-        .run(|handle, event| {
-            if let tauri::RunEvent::Exit = event {
-                app::save_now(handle);
-            }
+        .run(|handle, event| match event {
+            tauri::RunEvent::Exit => app::save_now(handle),
+            // Clicking the Dock icon brings the main window back.
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => app::show_main(handle.clone()),
+            _ => {}
         });
 }

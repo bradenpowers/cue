@@ -9,6 +9,7 @@ import TypeSafeSettings from './TypeSafeSettings'
 import type { UpdateSettings } from './Workspace'
 
 const titles = ['Welcome to Cue', 'Your experience', 'Connect your AI', 'Sharper answers (optional)', "You're ready"]
+const device = isMac ? 'Mac' : 'PC'
 
 function Point({ icon, title, children }: { icon: string; title: string; children: ReactNode }) {
   return (
@@ -49,7 +50,7 @@ export default function Welcome({ settings, update }: { settings: Settings; upda
       <p>Cue listens to your interview and, when you're asked a question, puts short talking points from your own experience in front of you.</p>
       <Point icon="∿" title="Listens live">Hears the call, knows which voice is yours and which is the interviewer's.</Point>
       <Point icon="✦" title="Answers on its own">When the interviewer asks a question, talking points appear within seconds. No buttons.</Point>
-      <Point icon="⚿" title="Stays on your Mac">Your résumé, keys, and saved interviews are stored only on this Mac. Text is sent only to the AI services you choose.</Point>
+      <Point icon="⚿" title={`Stays on your ${device}`}>Your résumé, keys, and saved interviews are stored only on this {device}. Text is sent only to the AI services you choose.</Point>
       <p className="muted">Setup takes about two minutes. You'll need an API key from an AI provider.</p>
     </div>,
     <div className="stack">
@@ -77,7 +78,7 @@ export default function Welcome({ settings, update }: { settings: Settings; upda
       <TypeSafeSettings />
     </div>,
     <div className="stack-loose">
-      <Point icon="▭" title="On a video call">Choose <strong>Video call</strong>, then <strong>Start listening</strong>. Your mic is you; Mac audio is the interviewer. Wear headphones so your mic hears only you.</Point>
+      <Point icon="▭" title="On a video call">Choose <strong>Video call</strong>, then <strong>Start listening</strong>. Your mic is you; {isMac ? 'Mac' : 'computer'} audio is the interviewer. Wear headphones so your mic hears only you.</Point>
       <Point icon="⚇" title="In person">Choose <strong>In person</strong>. One microphone hears the room, so Cue treats everything it hears as the interviewer.</Point>
       <Point icon="✋" title="Permissions">
         {isMac
