@@ -1,5 +1,6 @@
 pub mod ai;
 pub mod error;
+pub mod store;
 pub mod transcript;
 
 pub fn run() {
