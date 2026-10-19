@@ -37,7 +37,6 @@ impl Recognizer {
         let _ = self.audio.send(pcm.to_vec());
     }
 
-    /// Commits any utterance in progress, then ends the worker.
     pub fn stop(self) {
         drop(self.audio);
         let _ = self.worker.join();
@@ -51,7 +50,6 @@ fn run(mut state: WhisperState, rx: Receiver<Vec<f32>>, interval: Duration, on_e
     let pause = Duration::from_millis(PAUSE_MS as u64);
     loop {
         let mut done = vec![];
-        let mut open = true;
         loop {
             match rx.try_recv() {
                 Ok(pcm) => {
@@ -59,10 +57,8 @@ fn run(mut state: WhisperState, rx: Receiver<Vec<f32>>, interval: Duration, on_e
                     done.extend(seg.push(&pcm));
                 }
                 Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    open = false;
-                    break;
-                }
+                // Stopped: the app has already committed the last partial, so anything decoded now would be discarded.
+                Err(TryRecvError::Disconnected) => return,
             }
         }
         // WASAPI loopback delivers nothing while no app is playing, so stand in silence to end the utterance.
@@ -75,15 +71,6 @@ fn run(mut state: WhisperState, rx: Receiver<Vec<f32>>, interval: Duration, on_e
                 Ok(None) => {}
                 Err(e) => return on_event(SttEvent::Error(e)),
             }
-        }
-        if !open {
-            // The VAD has no flush, so commit the utterance still in progress.
-            if seg.speaking() {
-                if let Ok(Some(text)) = decode(&mut state, seg.current()) {
-                    on_event(SttEvent::Final(text));
-                }
-            }
-            return;
         }
         if !seg.speaking() {
             last_partial = Instant::now();
