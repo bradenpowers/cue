@@ -3,8 +3,13 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
+#[cfg(target_os = "macos")]
+mod macos;
+
 /// Receives 16 kHz mono f32 frames.
 pub type Sink = Box<dyn FnMut(&[f32]) + Send>;
+/// Told, with the user-facing message, when a running capture stops by itself.
+pub type OnError = Box<dyn Fn(String) + Send + Sync>;
 
 /// Keeps a stream alive on its own thread (cpal streams aren't always `Send`); dropping it stops the stream.
 pub struct Capture {
@@ -43,6 +48,10 @@ impl Drop for Capture {
 }
 
 pub fn start_mic(mut sink: Sink) -> Result<Capture> {
+    #[cfg(target_os = "macos")]
+    if !macos::microphone_allowed() {
+        return Err(mic_error(MicError::Denied));
+    }
     Capture::hold(move || {
         let device = cpal::default_host().default_input_device().ok_or_else(|| mic_error(MicError::NoDevice))?;
         let config = device.default_input_config().map_err(|e| mic_error(classify(e.to_string())))?;
@@ -60,8 +69,12 @@ pub fn start_mic(mut sink: Sink) -> Result<Capture> {
     })
 }
 
-// Task 12 (macOS) and Task 13 (Windows) replace this with real system-audio capture.
-pub fn start_system(_sink: Sink) -> Result<Capture> {
+#[cfg(target_os = "macos")]
+pub use macos::start as start_system;
+
+// Task 13 (Windows) replaces this with real system-audio capture.
+#[cfg(not(target_os = "macos"))]
+pub fn start_system(_sink: Sink, _on_error: OnError) -> Result<Capture> {
     err("System audio capture isn't available on this platform yet.")
 }
 

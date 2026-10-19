@@ -1,7 +1,14 @@
 pub mod model;
 pub mod vad;
 
-mod stub; // Tasks 12 (macOS) and 13 (Windows) swap in their real recognizers here.
+#[cfg(target_os = "macos")]
+mod apple;
+#[cfg(target_os = "macos")]
+pub use apple::Recognizer;
+
+#[cfg(not(target_os = "macos"))]
+mod stub; // Task 13 (Windows) swaps in its real recognizer here.
+#[cfg(not(target_os = "macos"))]
 pub use stub::Recognizer;
 
 #[derive(Debug, Clone, PartialEq)]

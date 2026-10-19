@@ -147,7 +147,9 @@ fn open_capture(app: &AppHandle, speaker: Speaker, system: bool, generation: u64
     let recognizer = Arc::new(Recognizer::start(on_event, &s.store.load_settings(), &s.store.dir)?);
     let feed = recognizer.clone();
     let sink: Sink = Box::new(move |pcm| feed.push(pcm));
-    match if system { audio::start_system(sink) } else { audio::start_mic(sink) } {
+    let failed = app.clone();
+    let on_error = Box::new(move |m| fail(&failed, speaker, generation, m));
+    match if system { audio::start_system(sink, on_error) } else { audio::start_mic(sink) } {
         Ok(capture) => Ok(Live { capture, recognizer }),
         Err(e) => {
             if let Ok(r) = Arc::try_unwrap(recognizer) {
@@ -191,16 +193,28 @@ fn on_stt(app: &AppHandle, speaker: Speaker, generation: u64, event: SttEvent) {
             }
         }
         SttEvent::Error(m) => {
-            let live = s.end(c, speaker);
-            c.error = format!("Transcription stopped: {m}. Start listening to reconnect.");
             drop(session);
-            // Stopping joins the recognizer, so do it off the recognizer's thread.
-            if let Some(live) = live {
-                std::thread::spawn(move || live.stop());
-            }
-            touch(app);
+            fail(app, speaker, generation, format!("Transcription stopped: {m}. Start listening to reconnect."));
         }
     }
+}
+
+/// Stops a capture whose recognizer or stream failed, showing `message`.
+fn fail(app: &AppHandle, speaker: Speaker, generation: u64, message: String) {
+    let s = state(app);
+    let mut session = s.session.lock().unwrap();
+    let c = capture(&mut session, speaker);
+    if c.generation != generation {
+        return;
+    }
+    let live = s.end(c, speaker);
+    c.error = message;
+    drop(session);
+    // Stopping joins the recognizer and stream, so do it off their threads.
+    if let Some(live) = live {
+        std::thread::spawn(move || live.stop());
+    }
+    touch(app);
 }
 
 /// Starts a suggestion; the newest one wins.
