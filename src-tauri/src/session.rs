@@ -11,6 +11,8 @@ pub struct CaptureState {
     pub error: String,
     pub segments: Vec<Line>,
     pub partial: Option<Line>,
+    /// Identifies the current recognizer; events from any other generation are stale.
+    pub generation: u64,
 }
 
 impl CaptureState {
@@ -33,6 +35,13 @@ impl CaptureState {
         }
         self.segments.push(line.clone());
         Some(line)
+    }
+
+    /// Ports `AudioCapture.stop`'s bookkeeping: keeps the partial line and retires the current recognizer.
+    pub fn end(&mut self, next_generation: u64) {
+        self.generation = next_generation;
+        self.running = false;
+        self.commit();
     }
 }
 
@@ -233,6 +242,15 @@ mod tests {
             Heard::Check { latest, .. } => assert_eq!(latest, suffix(&format!("{a} {b}"), 800)),
             h => panic!("{h:?}"),
         }
+    }
+
+    #[test]
+    fn ending_a_capture_keeps_partial_and_retires_generation() {
+        let mut c = CaptureState { running: true, generation: 1, ..Default::default() };
+        c.set_partial(Speaker::Them, " half said ");
+        c.end(2);
+        assert!(!c.running && c.partial.is_none() && c.generation == 2);
+        assert_eq!(c.segments[0].text, "half said");
     }
 
     #[test]

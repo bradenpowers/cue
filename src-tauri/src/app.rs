@@ -22,7 +22,8 @@ pub struct AppState {
     client: reqwest::Client,
     pending: Mutex<Option<JoinHandle<()>>>,
     save_gen: AtomicU64,
-    live: Mutex<[Option<Live>; 2]>, // indexed by `Speaker as usize`
+    live: Mutex<[Option<Live>; 2]>, // indexed by `Speaker as usize`; only touched under the session lock
+    generations: AtomicU64,
 }
 
 /// A running capture and the recognizer it feeds.
@@ -31,9 +32,30 @@ struct Live {
     recognizer: Arc<Recognizer>,
 }
 
+impl Live {
+    fn stop(self) {
+        drop(self.capture); // joins the stream thread, which drops the sink's recognizer handle
+        if let Ok(r) = Arc::try_unwrap(self.recognizer) {
+            r.stop();
+        }
+    }
+}
+
+impl AppState {
+    fn next_generation(&self) -> u64 {
+        self.generations.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Stops listening on `c` and hands back its stream and recognizer to shut down outside the session lock.
+    fn end(&self, c: &mut CaptureState, speaker: Speaker) -> Option<Live> {
+        c.end(self.next_generation());
+        self.live.lock().unwrap()[speaker as usize].take()
+    }
+}
+
 impl AppState {
     pub fn new(store: Store) -> Self {
-        Self { session: Mutex::new(Session::new()), store, client: ai::http_client(), pending: Mutex::new(None), save_gen: AtomicU64::new(0), live: Default::default() }
+        Self { session: Mutex::new(Session::new()), store, client: ai::http_client(), pending: Mutex::new(None), save_gen: AtomicU64::new(0), live: Default::default(), generations: AtomicU64::new(0) }
     }
 }
 
@@ -84,7 +106,7 @@ fn capture(session: &mut Session, speaker: Speaker) -> &mut CaptureState {
 /// Ports `AudioCapture.start`: `system` captures computer audio, otherwise the microphone.
 fn start_capture(app: &AppHandle, speaker: Speaker, system: bool) -> Result<()> {
     let s = state(app);
-    {
+    let generation = {
         let mut session = s.session.lock().unwrap();
         let c = capture(&mut session, speaker);
         if c.running || c.starting {
@@ -92,20 +114,36 @@ fn start_capture(app: &AppHandle, speaker: Speaker, system: bool) -> Result<()> 
         }
         c.starting = true;
         c.error.clear();
-    }
+        c.generation = s.next_generation();
+        c.generation
+    };
     emit(app);
-    let started = open_capture(app, speaker, system).map(|live| s.live.lock().unwrap()[speaker as usize] = Some(live));
+    let opened = open_capture(app, speaker, system, generation);
     let mut session = s.session.lock().unwrap();
     let c = capture(&mut session, speaker);
     c.starting = false;
-    c.running = started.is_ok();
-    started
+    let current = c.generation == generation;
+    match opened {
+        Ok(live) if current => {
+            c.running = true;
+            s.live.lock().unwrap()[speaker as usize] = Some(live);
+            Ok(())
+        }
+        // Stopped, or its recognizer failed, while starting; that path already updated the state.
+        Ok(live) => {
+            drop(session);
+            live.stop();
+            Ok(())
+        }
+        Err(e) if current => Err(e),
+        Err(_) => Ok(()),
+    }
 }
 
-fn open_capture(app: &AppHandle, speaker: Speaker, system: bool) -> Result<Live> {
+fn open_capture(app: &AppHandle, speaker: Speaker, system: bool, generation: u64) -> Result<Live> {
     let s = state(app);
     let events = app.clone();
-    let on_event = Arc::new(move |e| on_stt(&events, speaker, e));
+    let on_event = Arc::new(move |e| on_stt(&events, speaker, generation, e));
     let recognizer = Arc::new(Recognizer::start(on_event, &s.store.load_settings(), &s.store.dir)?);
     let feed = recognizer.clone();
     let sink: Sink = Box::new(move |pcm| feed.push(pcm));
@@ -123,47 +161,44 @@ fn open_capture(app: &AppHandle, speaker: Speaker, system: bool) -> Result<Live>
 /// Ports `AudioCapture.stop`: ends the stream and recognizer and keeps any partial line.
 fn stop_capture(app: &AppHandle, speaker: Speaker) {
     let s = state(app);
-    let live = s.live.lock().unwrap()[speaker as usize].take();
-    if let Some(Live { capture, recognizer }) = live {
-        drop(capture); // joins the stream thread, which drops the sink's recognizer handle
-        if let Ok(r) = Arc::try_unwrap(recognizer) {
-            r.stop();
-        }
+    let live = s.end(capture(&mut s.session.lock().unwrap(), speaker), speaker);
+    if let Some(live) = live {
+        live.stop();
     }
-    let mut session = s.session.lock().unwrap();
-    let c = capture(&mut session, speaker);
-    c.running = false;
-    c.commit();
 }
 
-/// Recognizer events arrive on its own threads.
-fn on_stt(app: &AppHandle, speaker: Speaker, event: SttEvent) {
+/// Recognizer events arrive on its own threads; ones from a stopped or replaced recognizer are dropped.
+fn on_stt(app: &AppHandle, speaker: Speaker, generation: u64, event: SttEvent) {
     let s = state(app);
+    let mut session = s.session.lock().unwrap();
+    let c = capture(&mut session, speaker);
+    if c.generation != generation {
+        return;
+    }
     match event {
         SttEvent::Partial(t) => {
-            capture(&mut s.session.lock().unwrap(), speaker).set_partial(speaker, &t);
+            c.set_partial(speaker, &t);
+            drop(session);
             emit(app);
         }
         SttEvent::Final(t) => {
-            let line = {
-                let mut session = s.session.lock().unwrap();
-                let c = capture(&mut session, speaker);
-                c.set_partial(speaker, &t);
-                c.commit()
-            };
+            c.set_partial(speaker, &t);
+            let line = c.commit();
+            drop(session);
             touch(app);
             if line.is_some() && speaker == Speaker::Them {
                 on_utterance(app);
             }
         }
         SttEvent::Error(m) => {
+            let live = s.end(c, speaker);
+            c.error = format!("Transcription stopped: {m}. Start listening to reconnect.");
+            drop(session);
             // Stopping joins the recognizer, so do it off the recognizer's thread.
-            let app = app.clone();
-            std::thread::spawn(move || {
-                stop_capture(&app, speaker);
-                capture(&mut state(&app).session.lock().unwrap(), speaker).error = format!("Transcription stopped: {m}. Start listening to reconnect.");
-                touch(&app);
-            });
+            if let Some(live) = live {
+                std::thread::spawn(move || live.stop());
+            }
+            touch(app);
         }
     }
 }
