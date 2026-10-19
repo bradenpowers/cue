@@ -1,9 +1,11 @@
 pub mod ai;
 pub mod app;
+pub mod audio;
 pub mod error;
 pub mod resume;
 pub mod session;
 pub mod store;
+pub mod stt;
 pub mod transcript;
 pub mod typesafe;
 

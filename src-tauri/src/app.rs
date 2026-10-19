@@ -1,13 +1,15 @@
 use crate::ai::{self, LLMConfiguration, LLMProvider};
+use crate::audio::{self, Capture, Sink};
 use crate::error::{err, CueError, Result};
 use crate::resume::{self, ImportedResume};
-use crate::session::{experience_for, suffix, Heard, Session, Snapshot};
+use crate::session::{experience_for, suffix, CaptureState, Heard, Session, Snapshot};
+use crate::stt::{Recognizer, SttEvent};
 use crate::store::{Interview, Settings, Store};
 use crate::transcript::{transcript, Speaker};
 use crate::typesafe::{self, Assessment, QuestionKind, QUESTION_THRESHOLD};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::async_runtime::{self, JoinHandle};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -20,11 +22,18 @@ pub struct AppState {
     client: reqwest::Client,
     pending: Mutex<Option<JoinHandle<()>>>,
     save_gen: AtomicU64,
+    live: Mutex<[Option<Live>; 2]>, // indexed by `Speaker as usize`
+}
+
+/// A running capture and the recognizer it feeds.
+struct Live {
+    capture: Capture,
+    recognizer: Arc<Recognizer>,
 }
 
 impl AppState {
     pub fn new(store: Store) -> Self {
-        Self { session: Mutex::new(Session::new()), store, client: ai::http_client(), pending: Mutex::new(None), save_gen: AtomicU64::new(0) }
+        Self { session: Mutex::new(Session::new()), store, client: ai::http_client(), pending: Mutex::new(None), save_gen: AtomicU64::new(0), live: Default::default() }
     }
 }
 
@@ -65,11 +74,99 @@ pub fn save_now(app: &AppHandle) {
     }
 }
 
-// Task 10 replaces these with real audio capture.
-fn start_capture(_app: &AppHandle, _speaker: Speaker, _system: bool) -> Result<()> {
-    err("Live transcription isn't available yet.")
+fn capture(session: &mut Session, speaker: Speaker) -> &mut CaptureState {
+    match speaker {
+        Speaker::Them => &mut session.them,
+        Speaker::Me => &mut session.me,
+    }
 }
-fn stop_capture(_app: &AppHandle, _speaker: Speaker) {}
+
+/// Ports `AudioCapture.start`: `system` captures computer audio, otherwise the microphone.
+fn start_capture(app: &AppHandle, speaker: Speaker, system: bool) -> Result<()> {
+    let s = state(app);
+    {
+        let mut session = s.session.lock().unwrap();
+        let c = capture(&mut session, speaker);
+        if c.running || c.starting {
+            return Ok(());
+        }
+        c.starting = true;
+        c.error.clear();
+    }
+    emit(app);
+    let started = open_capture(app, speaker, system).map(|live| s.live.lock().unwrap()[speaker as usize] = Some(live));
+    let mut session = s.session.lock().unwrap();
+    let c = capture(&mut session, speaker);
+    c.starting = false;
+    c.running = started.is_ok();
+    started
+}
+
+fn open_capture(app: &AppHandle, speaker: Speaker, system: bool) -> Result<Live> {
+    let s = state(app);
+    let events = app.clone();
+    let on_event = Arc::new(move |e| on_stt(&events, speaker, e));
+    let recognizer = Arc::new(Recognizer::start(on_event, &s.store.load_settings(), &s.store.dir)?);
+    let feed = recognizer.clone();
+    let sink: Sink = Box::new(move |pcm| feed.push(pcm));
+    match if system { audio::start_system(sink) } else { audio::start_mic(sink) } {
+        Ok(capture) => Ok(Live { capture, recognizer }),
+        Err(e) => {
+            if let Ok(r) = Arc::try_unwrap(recognizer) {
+                r.stop();
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Ports `AudioCapture.stop`: ends the stream and recognizer and keeps any partial line.
+fn stop_capture(app: &AppHandle, speaker: Speaker) {
+    let s = state(app);
+    let live = s.live.lock().unwrap()[speaker as usize].take();
+    if let Some(Live { capture, recognizer }) = live {
+        drop(capture); // joins the stream thread, which drops the sink's recognizer handle
+        if let Ok(r) = Arc::try_unwrap(recognizer) {
+            r.stop();
+        }
+    }
+    let mut session = s.session.lock().unwrap();
+    let c = capture(&mut session, speaker);
+    c.running = false;
+    c.commit();
+}
+
+/// Recognizer events arrive on its own threads.
+fn on_stt(app: &AppHandle, speaker: Speaker, event: SttEvent) {
+    let s = state(app);
+    match event {
+        SttEvent::Partial(t) => {
+            capture(&mut s.session.lock().unwrap(), speaker).set_partial(speaker, &t);
+            emit(app);
+        }
+        SttEvent::Final(t) => {
+            let line = {
+                let mut session = s.session.lock().unwrap();
+                let c = capture(&mut session, speaker);
+                c.set_partial(speaker, &t);
+                c.commit()
+            };
+            touch(app);
+            if line.is_some() && speaker == Speaker::Them {
+                on_utterance(app);
+            }
+        }
+        SttEvent::Error(m) => {
+            // Stopping joins the recognizer, so do it off the recognizer's thread.
+            let app = app.clone();
+            std::thread::spawn(move || {
+                stop_capture(&app, speaker);
+                capture(&mut state(&app).session.lock().unwrap(), speaker).error = format!("Transcription stopped: {m}. Start listening to reconnect.");
+                touch(&app);
+            });
+        }
+    }
+}
 
 /// Starts a suggestion; the newest one wins.
 fn start_suggestion(app: &AppHandle, typed: Option<String>, assessment: Option<Assessment>) {
@@ -157,7 +254,7 @@ pub fn snapshot(app: AppHandle) -> Snapshot {
     state(&app).session.lock().unwrap().snapshot()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn start_listening(app: AppHandle, call: bool) {
     let them = start_capture(&app, Speaker::Them, call);
     let me = if call { start_capture(&app, Speaker::Me, false) } else { Ok(()) };
@@ -174,11 +271,11 @@ pub fn start_listening(app: AppHandle, call: bool) {
     emit(&app);
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn stop_listening(app: AppHandle) {
     stop_capture(&app, Speaker::Them);
     stop_capture(&app, Speaker::Me);
-    emit(&app);
+    touch(&app); // stopping commits any partial line
 }
 
 #[tauri::command]
@@ -213,7 +310,7 @@ pub fn cancel(app: AppHandle) {
     emit(&app);
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn clear(app: AppHandle) {
     let s = state(&app);
     if let Some(task) = s.pending.lock().unwrap().take() {
