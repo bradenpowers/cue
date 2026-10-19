@@ -164,7 +164,9 @@ impl Session {
     }
 
     pub fn reset(&mut self) {
+        let run = self.run + 1; // invalidates any in-flight run
         *self = Session::new();
+        self.run = run;
     }
 }
 
@@ -237,6 +239,15 @@ mod tests {
         s.finish_run(a, Ok(("q".into(), "ans".into(), "".into())));
         assert!(s.answer.is_empty());
         assert!(s.busy);
+    }
+
+    #[test]
+    fn run_started_before_reset_is_ignored() {
+        let mut s = Session::new();
+        let old = s.begin_run();
+        s.reset();
+        s.finish_run(old, Ok(("q".into(), "ans".into(), "".into())));
+        assert!(s.answer.is_empty() && s.history.is_empty() && !s.busy);
     }
 
     #[test]
