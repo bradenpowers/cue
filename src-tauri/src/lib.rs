@@ -2,6 +2,7 @@ pub mod ai;
 pub mod error;
 pub mod store;
 pub mod transcript;
+pub mod typesafe;
 
 pub fn run() {
     tauri::Builder::default()
