@@ -92,7 +92,7 @@ In **Context & setup**, scroll to **AI provider**:
 
 1. Choose **ChatGPT / OpenAI**, **Claude / Anthropic**, **Gemini / Google**, or **Local LLM** from the provider dropdown.
 2. Enter the model ID you want to use. Cloud providers start with a suggested model ID; you can edit it to any compatible text model available to your account.
-3. Enter the matching provider’s API key and click **Save key**. Each provider has a separate entry in Cue’s settings file.
+3. Enter the matching provider’s API key and click **Save key**. Each provider has a separate entry in `keys.json` in Cue’s data folder.
 4. Click **Test connection** to check the model and key. It sends a small test prompt using the key currently in the field, without your résumé or transcript. Cloud providers may charge for this request. Testing does not save an unsaved key.
 
 | Selection | Connection | Model setting |
@@ -193,7 +193,7 @@ Cue keeps its data in one folder:
 | Audio on Windows | Transcribed locally with Whisper; never leaves your PC |
 | Talking-point request | Experience, role, question, and the last 12,000 transcript characters are sent to the selected provider or local server |
 
-Keys are stored as plain text in Cue’s settings file, not in the macOS Keychain or Windows Credential Manager. Protect your user account accordingly. If you used the earlier Swift version of Cue, your experience, role, provider, and model settings are copied from its preferences on first launch; re-enter API keys, because Keychain items are not migrated.
+Keys are stored as plain text in `keys.json`, not in the macOS Keychain or Windows Credential Manager. Protect your user account accordingly. If you used the earlier Swift version of Cue, your experience, role, provider, and model settings are copied from its preferences on first launch (macOS only, and only if `settings.json` doesn’t exist yet). Its API keys already live in the same `keys.json` and are picked up as-is.
 
 For OpenAI, Cue sends Responses API requests with `store: false`; this is not a guarantee of zero provider retention. Each cloud provider’s data policies apply to requests sent to that provider. If you add a TypeSafe key, TypeSafe’s policies apply to the data described above. Cue does not send audio to the selected LLM, process screenshots, or save audio recordings. Computer audio captures all sound your computer plays, not just one selected call app. The only other network request Cue makes is the one-time Whisper model download on Windows.
 
