@@ -107,7 +107,7 @@ Each `AudioCapture(speaker)` owns one source and one recognizer. The source push
 - Calibration settings: `VAD_THRESHOLD`, pause length, and re-decode interval.
 - Whisper models are `tiny.en`, `base.en` (default), and `small.en`, downloaded from the whisper.cpp Hugging Face repo into `<data>/models/`.
   - The download shows progress and is checked against a SHA-256. A mismatch or failure deletes the partial file.
-  - Download starts from Setup, or when you click Start listening without a model.
+  - Download starts from Setup. Clicking Start listening without a model shows "Download the speech model in Setup first."
 
 ### State flow
 
