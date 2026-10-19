@@ -43,14 +43,14 @@ pub enum Heard {
     Check { latest: String, earlier: String, count: usize },
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct CaptureView {
     running: bool,
     starting: bool,
     error: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     lines: Vec<Line>,
@@ -99,6 +99,10 @@ impl Session {
 
     pub fn answered(&self) -> usize {
         self.answered
+    }
+
+    pub fn mark_answered(&mut self, count: usize) {
+        self.answered = count;
     }
 
     pub fn snapshot(&self) -> Snapshot {
