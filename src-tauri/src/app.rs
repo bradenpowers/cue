@@ -1,6 +1,6 @@
 use crate::ai::{self, LLMConfiguration, LLMProvider};
 use crate::audio::{self, Capture, Sink};
-use crate::error::{CueError, Result};
+use crate::error::{err, CueError, Result};
 use crate::resume::{self, ImportedResume};
 use crate::session::{experience_for, suffix, CaptureState, Heard, Session, Snapshot};
 use crate::stt::{self, Recognizer, SttEvent};
@@ -425,7 +425,19 @@ pub fn delete_interview(app: AppHandle, id: String) -> Result<()> {
 
 #[tauri::command]
 pub async fn download_whisper_model(app: AppHandle, name: String) -> Result<()> {
+    if !stt::model::MODELS.iter().any(|m| m.name == name) {
+        return err(format!("Unknown speech model \"{name}\"."));
+    }
     let s = state(&app);
+    {
+        // One download at a time; a repeat call is a no-op.
+        let mut session = s.session.lock().unwrap();
+        if session.download.is_some() {
+            return Ok(());
+        }
+        session.download = Some(0.0);
+    }
+    emit(&app);
     let set = |download: Option<f32>, error: Option<String>| {
         let mut session = s.session.lock().unwrap();
         session.download = download;
@@ -435,7 +447,6 @@ pub async fn download_whisper_model(app: AppHandle, name: String) -> Result<()> 
         drop(session);
         emit(&app);
     };
-    set(Some(0.0), None);
     let result = stt::model::download(&s.store.dir, &name, |p| set(Some(p), None)).await;
     match result {
         Ok(_) => {

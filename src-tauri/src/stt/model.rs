@@ -89,4 +89,12 @@ mod tests {
         finish(&part, &dest, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad").unwrap();
         assert!(dest.exists() && !part.exists());
     }
+
+    #[tokio::test]
+    async fn unknown_name_rejected_without_touching_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = download(dir.path(), "nope", |_| {}).await.unwrap_err();
+        assert!(e.0.contains("Unknown"), "{e}");
+        assert!(!dir.path().join("models").exists());
+    }
 }
