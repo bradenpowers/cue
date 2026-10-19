@@ -20,10 +20,10 @@ impl Speaker {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Line {
-    id: Uuid,
-    speaker: Speaker,
-    text: String,
-    start: DateTime<Utc>,
+    pub id: Uuid,
+    pub speaker: Speaker,
+    pub text: String,
+    pub start: DateTime<Utc>,
 }
 
 // Phrases that open an interviewer prompt, matched at the start of a clause.
