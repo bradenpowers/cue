@@ -5,6 +5,8 @@ use std::thread::JoinHandle;
 
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(windows)]
+mod windows;
 
 /// Receives 16 kHz mono f32 frames.
 pub type Sink = Box<dyn FnMut(&[f32]) + Send>;
@@ -72,8 +74,10 @@ pub fn start_mic(mut sink: Sink) -> Result<Capture> {
 #[cfg(target_os = "macos")]
 pub use macos::start as start_system;
 
-// Task 13 (Windows) replaces this with real system-audio capture.
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+pub use windows::start as start_system;
+
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn start_system(_sink: Sink, _on_error: OnError) -> Result<Capture> {
     err("System audio capture isn't available on this platform yet.")
 }
