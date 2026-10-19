@@ -2,3 +2,7 @@
 dist/
 .DS_Store
 .swiftpm/
+
+node_modules/
+target/
+src-tauri/gen

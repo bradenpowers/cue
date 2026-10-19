@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>llm.claude.model</key>
+	<string>my-claude-model</string>
+	<key>llm.local.baseURL</key>
+	<string>http://127.0.0.1:1234/v1</string>
+	<key>llm.provider</key>
+	<string>claude</string>
+	<key>model</key>
+	<string>my-existing-model</string>
+	<key>resume</key>
+	<string>R</string>
+	<key>role</key>
+	<string>Ro</string>
+	<key>welcomed</key>
+	<true/>
+</dict>
+</plist>
