@@ -67,8 +67,10 @@ impl Recognizer {
         let Some(recognizer) = recognizer.filter(|r| unsafe { r.isAvailable() }) else {
             return err("English speech recognition is unavailable. Check your connection and macOS speech settings.");
         };
-        // Results otherwise arrive on the main queue, which Tauri's event loop owns.
-        unsafe { recognizer.setQueue(&NSOperationQueue::new()) };
+        // Results otherwise arrive on the main queue, which Tauri's event loop owns. Serial, so partials stay in order.
+        let queue = NSOperationQueue::new();
+        queue.setMaxConcurrentOperationCount(1);
+        unsafe { recognizer.setQueue(&queue) };
         let format = unsafe { AVAudioFormat::initStandardFormatWithSampleRate_channels(AVAudioFormat::alloc(), 16_000.0, 1) }
             .expect("16 kHz mono is a valid format");
         let shared = Arc::new(Shared {
